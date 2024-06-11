@@ -7,4 +7,28 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <None Remove="server.cfg" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="server.cfg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="QuickFix">
+      <HintPath>libs\QuickFix\QuickFix.dll</HintPath>
+    </Reference>
+    <Reference Include="QuickFix.FIX44">
+      <HintPath>libs\QuickFix\QuickFix.FIX44.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Data\" />
+    <Folder Include="Model\" />
+  </ItemGroup>
+
 </Project>
