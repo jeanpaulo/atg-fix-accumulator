@@ -1,4 +1,5 @@
-﻿using QuickFix;
+﻿using Acceptor.Data;
+using QuickFix;
 using QuickFix.Fields;
 using System;
 using System.Collections.Generic;
@@ -11,9 +12,21 @@ namespace Acceptor;
 public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplication
 {
     private static readonly HttpClient client = new HttpClient();
+    private readonly AcceptorContext _context;
 
     int orderID = 0;
     int execID = 0;
+
+
+    public AcceptorApplication()
+    {
+    }
+
+    public AcceptorApplication(AcceptorContext context)
+    {
+        _context = context;
+    }
+
 
     #region QuickFix.Application Methods
     public void FromApp(Message message, SessionID sessionID)

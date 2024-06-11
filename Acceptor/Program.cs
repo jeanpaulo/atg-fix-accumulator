@@ -1,6 +1,9 @@
 ﻿
 
 using Acceptor;
+using Acceptor.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using QuickFix;
 using QuickFix.Fields;
 
@@ -13,25 +16,32 @@ class Program
 
 		try
 		{
-			var configFile = new StreamReader("./server.cfg");
+            var serviceProvider = new ServiceCollection()
+                .AddDbContext<AcceptorContext>(options => options.UseInMemoryDatabase("FixDb"))
+                .BuildServiceProvider();
 
 
-            SessionSettings settings = new SessionSettings(configFile);
-            IApplication executorApp = new AcceptorApplication();
-            IMessageStoreFactory storeFactory = new FileStoreFactory(settings);
-            ILogFactory logFactory = new FileLogFactory(settings);
-            ThreadedSocketAcceptor acceptor = new ThreadedSocketAcceptor(executorApp, storeFactory, settings, logFactory);
-            HttpServer srv = new HttpServer(HttpServerPrefix, settings);
+            using (var context = serviceProvider.GetService<AcceptorContext>())
+            {
+                var configFile = new StreamReader("./server.cfg");
 
-            acceptor.Start();
-            srv.Start();
+                SessionSettings settings = new SessionSettings(configFile);
+                IApplication executorApp = new AcceptorApplication(context);
+                IMessageStoreFactory storeFactory = new FileStoreFactory(settings);
+                ILogFactory logFactory = new FileLogFactory(settings);
+                ThreadedSocketAcceptor acceptor = new ThreadedSocketAcceptor(executorApp, storeFactory, settings, logFactory);
+                HttpServer srv = new HttpServer(HttpServerPrefix, settings);
 
-            Console.WriteLine(HttpServerPrefix);
-            Console.WriteLine("Aperter <enter> para sair");
-            Console.Read();
+                acceptor.Start();
+                srv.Start();
 
-            srv.Stop();
-            acceptor.Stop();
+                Console.WriteLine(HttpServerPrefix);
+                Console.WriteLine("Aperter <enter> para sair");
+                Console.Read();
+
+                srv.Stop();
+                acceptor.Stop();
+            }
         }
 		catch (Exception ex)
 		{
