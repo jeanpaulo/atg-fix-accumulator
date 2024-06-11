@@ -1,4 +1,5 @@
 ﻿using Acceptor.Data;
+using Acceptor.Model;
 using QuickFix;
 using QuickFix.Fields;
 using System;
@@ -13,10 +14,10 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
 {
     private static readonly HttpClient client = new HttpClient();
     private readonly AcceptorContext _context;
+    
+    const int LIMITE_EXPOSICAO = 1_000_000;
 
     int orderID = 0;
-    int execID = 0;
-
 
     public AcceptorApplication()
     {
@@ -50,10 +51,13 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
 
     public async void OnMessage(QuickFix.FIX44.NewOrderSingle n, SessionID s)
     {
-        Console.WriteLine("\nMensagem chegando...");
+        string signalUrl = "http://localhost:5112/broadcast?";
+        string finalSignalUrl = "";
 
         try
         {
+            Console.WriteLine("\nMensagem chegando...");
+
             Symbol symbol = n.Symbol;
             Side side = n.Side;
             OrdType ordType = n.OrdType;
@@ -66,15 +70,75 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
             Console.WriteLine($"Quantidade: {orderQty.Obj}");
             Console.WriteLine($"Preço: {price.Obj}");
 
-            QuickFix.FIX44.ExecutionReport exReport = new QuickFix.FIX44.ExecutionReport();
+            var somatorio_ordem = price.Obj * Convert.ToInt32(orderQty.Obj);
 
-            exReport.Set(clOrdID);
-            exReport.Set(symbol);
-            exReport.Set(orderQty);
-            exReport.Set(new LastQty(orderQty.getValue()));
-            exReport.Set(new LastPx(price.getValue()));
+            if (somatorio_ordem > LIMITE_EXPOSICAO)
+            {
+                var reject = new QuickFix.FIX44.OrderCancelReject(
+                    new OrderID("1"),
+                    new ClOrdID(GenOrderID()),
+                    new OrigClOrdID(n.ClOrdID.Obj),
+                    new OrdStatus(OrdStatus.CANCELED),
+                    new CxlRejResponseTo('1')
+                );
 
-            Session.SendToTarget(exReport, s);
+                Session.SendToTarget(reject, s);
+
+                finalSignalUrl = signalUrl + "message=OrderReject";
+
+                Console.WriteLine(finalSignalUrl);
+            }
+            else
+            {
+                var order = new Order();
+
+                order.CreatedAt = DateTime.UtcNow;
+                order.Price = price.Obj;
+                order.Quantity = Convert.ToInt32(orderQty.Obj);
+                order.Side = side.Obj;
+                order.Symbol = symbol.Obj;
+
+                _context.OrderItems.Add(order);
+                await _context.SaveChangesAsync();
+
+                var listaOrdens = _context.OrderItems.ToList();
+                var compra = listaOrdens.Where(x => x.Side == '1').Select(y => y.Price * y.Quantity).Sum();
+                var venda = listaOrdens.Where(x => x.Side == '2').Select(y => y.Price * y.Quantity).Sum();
+
+                var exposicao = compra - venda;
+
+                QuickFix.FIX44.ExecutionReport exReport = new QuickFix.FIX44.ExecutionReport();
+
+                exReport.Set(clOrdID);
+                exReport.Set(symbol);
+                exReport.Set(orderQty);
+                exReport.Set(new LastQty(orderQty.getValue()));
+                exReport.Set(new LastPx(price.getValue()));
+
+                if (n.IsSetAccount())
+                    exReport.SetField(n.Account);
+
+                Session.SendToTarget(exReport, s);
+
+                finalSignalUrl = signalUrl + "message=ExecutionReport";
+
+                Console.WriteLine(finalSignalUrl);
+            }
+            
+            try
+            {
+                var response = await client.PostAsync(finalSignalUrl, null);
+                var responseString = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(responseString);
+            }
+            catch (HttpRequestException ex)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw;
+            }
         }
         catch (Exception ex)
         {
@@ -83,5 +147,6 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
         }
     }
 
+    private string GenOrderID() { return (++orderID).ToString(); }
 
 }
