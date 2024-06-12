@@ -9,10 +9,14 @@
 
   <ItemGroup>
     <None Remove="server.cfg" />
+    <None Remove="spec\fix\FIX44.xml" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="server.cfg">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="spec\fix\FIX44.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

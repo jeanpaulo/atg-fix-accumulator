@@ -2,12 +2,7 @@
 using Acceptor.Model;
 using QuickFix;
 using QuickFix.Fields;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Net.Http;
 
 namespace Acceptor;
 public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplication
@@ -15,9 +10,9 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
     private static readonly HttpClient client = new HttpClient();
     private readonly AcceptorContext _context;
     
-    const int LIMITE_EXPOSICAO = 1_000_000;
-
-    int orderID = 0;
+    private const int LIMITE_EXPOSICAO = 1_000_000;
+    private const string signalUrl = "http://localhost:5074/broadcast";
+    private int orderID = 0;
 
     public AcceptorApplication()
     {
@@ -51,98 +46,119 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
 
     public async void OnMessage(QuickFix.FIX44.NewOrderSingle n, SessionID s)
     {
-        string signalUrl = "http://localhost:5112/broadcast?";
         string finalSignalUrl = "";
 
         try
         {
             Console.WriteLine("\nMensagem chegando...");
 
-            Symbol symbol = n.Symbol;
-            Side side = n.Side;
-            OrdType ordType = n.OrdType;
-            OrderQty orderQty = n.OrderQty;
-            Price price = new Price(n.Price.Obj);
-            ClOrdID clOrdID = n.ClOrdID;
+            var symbol = n.Symbol.Obj;
+            var side = n.Side.Obj;
+            //OrdType ordType = n.OrdType;
+            var orderQty = n.OrderQty.Obj;
+            var price = n.Price.Obj;
+            var clOrdID = n.ClOrdID.Obj;
 
-            Console.WriteLine($"Simbolo: {symbol.Obj}");
-            Console.WriteLine($"Lado: {side.Obj}");
-            Console.WriteLine($"Quantidade: {orderQty.Obj}");
-            Console.WriteLine($"Preço: {price.Obj}");
+            Console.WriteLine($"Simbolo: {symbol}");
+            Console.WriteLine($"Lado: {side}");
+            Console.WriteLine($"Quantidade: {orderQty}");
+            Console.WriteLine($"Preço: {price}");
 
-            var somatorio_ordem = price.Obj * Convert.ToInt32(orderQty.Obj);
+            var somatorio_ordem = price * orderQty;
 
             if (somatorio_ordem > LIMITE_EXPOSICAO)
             {
-                var reject = new QuickFix.FIX44.OrderCancelReject(
-                    new OrderID("1"),
-                    new ClOrdID(GenOrderID()),
-                    new OrigClOrdID(n.ClOrdID.Obj),
-                    new OrdStatus(OrdStatus.CANCELED),
-                    new CxlRejResponseTo('1')
-                );
+                var reject = CreateOrderCancelReject(clOrdID);
 
                 Session.SendToTarget(reject, s);
-
-                finalSignalUrl = signalUrl + "message=OrderReject";
-
-                Console.WriteLine(finalSignalUrl);
+                await BroadcastMessage("OrderReject");
             }
             else
             {
-                var order = new Order();
-
-                order.CreatedAt = DateTime.UtcNow;
-                order.Price = price.Obj;
-                order.Quantity = Convert.ToInt32(orderQty.Obj);
-                order.Side = side.Obj;
-                order.Symbol = symbol.Obj;
+                var order = CreateOrder(symbol, side, orderQty, price);
 
                 _context.OrderItems.Add(order);
                 await _context.SaveChangesAsync();
 
-                var listaOrdens = _context.OrderItems.ToList();
-                var compra = listaOrdens.Where(x => x.Side == '1').Select(y => y.Price * y.Quantity).Sum();
-                var venda = listaOrdens.Where(x => x.Side == '2').Select(y => y.Price * y.Quantity).Sum();
+                var exposicao = CalculateExposure(symbol);
+                Console.WriteLine($"Exposição: {exposicao}");
 
-                var exposicao = compra - venda;
-
-                QuickFix.FIX44.ExecutionReport exReport = new QuickFix.FIX44.ExecutionReport();
-
-                exReport.Set(clOrdID);
-                exReport.Set(symbol);
-                exReport.Set(orderQty);
-                exReport.Set(new LastQty(orderQty.getValue()));
-                exReport.Set(new LastPx(price.getValue()));
-
-                if (n.IsSetAccount())
-                    exReport.SetField(n.Account);
-
+                var exReport = CreateExecutionReport(clOrdID, symbol, orderQty, price);
                 Session.SendToTarget(exReport, s);
 
-                finalSignalUrl = signalUrl + "message=ExecutionReport";
-
-                Console.WriteLine(finalSignalUrl);
-            }
-            
-            try
-            {
-                var response = await client.PostAsync(finalSignalUrl, null);
-                var responseString = await response.Content.ReadAsStringAsync();
-                Console.WriteLine(responseString);
-            }
-            catch (HttpRequestException ex)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                throw;
+                await BroadcastMessage("ExecutionReport");
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error on AcceptorApplication/OnMessage: {ex.Message}");
+            throw;
+        }
+    }
+
+    private enum SIDE
+    {
+        COMPRA = '1' ,
+        VENDA = '2'
+    }
+
+    private decimal CalculateExposure(string symbol)
+    {
+        var orderItems = _context.OrderItems.ToList();
+        var compra = orderItems.Where(x => x.Symbol.Equals(symbol) && x.Side == (char)SIDE.COMPRA).Select(y => y.Price * y.Quantity).Sum();
+        var venda = orderItems.Where(x => x.Symbol.Equals(symbol) && x.Side == (char)SIDE.VENDA).Select(y => y.Price * y.Quantity).Sum();
+        return compra - venda;
+    }
+
+    private QuickFix.FIX44.OrderCancelReject CreateOrderCancelReject(string clOrdID)
+    {
+        return new QuickFix.FIX44.OrderCancelReject(
+            new OrderID(GenOrderID()),
+            new ClOrdID(clOrdID),
+            new OrigClOrdID(clOrdID),
+            new OrdStatus(OrdStatus.CANCELED),
+            new CxlRejResponseTo('1')
+        );
+    }
+
+    private Order CreateOrder(string symbol, char side, decimal orderQty, decimal price)
+    {
+        return new Order
+        {
+            CreatedAt = DateTime.UtcNow,
+            Price = price,
+            Quantity = Convert.ToInt32(orderQty),
+            Side = side,
+            Symbol = symbol
+        };
+    }
+
+    private QuickFix.FIX44.ExecutionReport CreateExecutionReport(string clOrdID, string symbol, decimal orderQty, decimal price)
+    {
+        var exReport = new QuickFix.FIX44.ExecutionReport();
+        exReport.Set(new ClOrdID(clOrdID));
+        exReport.Set(new Symbol(symbol));
+        exReport.Set(new OrderQty(orderQty));
+        exReport.Set(new LastQty(orderQty));
+        exReport.Set(new LastPx(price));
+        return exReport;
+    }
+
+    private async Task BroadcastMessage(string message)
+    {
+        var finalSignalUrl = $"{signalUrl}?message={message}";
+
+        Console.WriteLine(finalSignalUrl);
+
+        try
+        {
+            var response = await client.PostAsync(finalSignalUrl, null);
+            var responseString = await response.Content.ReadAsStringAsync();
+            Console.WriteLine(responseString);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error ao enviar messagem de broadcast: {ex.Message}");
             throw;
         }
     }
