@@ -64,28 +64,28 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
             Console.WriteLine($"Quantidade: {orderQty}");
             Console.WriteLine($"Preço: {price}");
 
-            var somatorio_ordem = price * orderQty;
+            var orders = _context.OrderItems.Where(x => x.Symbol.Equals(symbol)).ToList();
+            var newOrder = CreateOrder(symbol, side, orderQty, price);
+            orders.Add(newOrder);
 
-            if (somatorio_ordem > LIMITE_EXPOSICAO)
+            var exposicao = CalculateExposure(orders);
+
+            Console.WriteLine($"Exposição: {exposicao}");
+
+            if (Math.Abs(exposicao) > LIMITE_EXPOSICAO)
             {
                 var reject = CreateOrderCancelReject(clOrdID);
-
                 Session.SendToTarget(reject, s);
                 await BroadcastMessage("OrderReject");
-            }
+                _context.ChangeTracker.Clear();
+            } 
             else
             {
-                var order = CreateOrder(symbol, side, orderQty, price);
-
-                _context.OrderItems.Add(order);
+                _context.OrderItems.Add(newOrder);
                 await _context.SaveChangesAsync();
-
-                var exposicao = CalculateExposure(symbol);
-                Console.WriteLine($"Exposição: {exposicao}");
 
                 var exReport = CreateExecutionReport(clOrdID, symbol, orderQty, price);
                 Session.SendToTarget(exReport, s);
-
                 await BroadcastMessage("ExecutionReport");
             }
         }
@@ -102,23 +102,11 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
         VENDA = '2'
     }
 
-    private decimal CalculateExposure(string symbol)
+    private decimal CalculateExposure(List<Order> orders)
     {
-        var orderItems = _context.OrderItems.ToList();
-        var compra = orderItems.Where(x => x.Symbol.Equals(symbol) && x.Side == (char)SIDE.COMPRA).Select(y => y.Price * y.Quantity).Sum();
-        var venda = orderItems.Where(x => x.Symbol.Equals(symbol) && x.Side == (char)SIDE.VENDA).Select(y => y.Price * y.Quantity).Sum();
+        var compra = orders.Where(x => x.Side == (char)SIDE.COMPRA).Select(y => y.Price * y.Quantity).Sum();
+        var venda = orders.Where(x => x.Side == (char)SIDE.VENDA).Select(y => y.Price * y.Quantity).Sum();
         return compra - venda;
-    }
-
-    private QuickFix.FIX44.OrderCancelReject CreateOrderCancelReject(string clOrdID)
-    {
-        return new QuickFix.FIX44.OrderCancelReject(
-            new OrderID(GenOrderID()),
-            new ClOrdID(clOrdID),
-            new OrigClOrdID(clOrdID),
-            new OrdStatus(OrdStatus.CANCELED),
-            new CxlRejResponseTo('1')
-        );
     }
 
     private Order CreateOrder(string symbol, char side, decimal orderQty, decimal price)
@@ -139,10 +127,23 @@ public class AcceptorApplication : QuickFix.MessageCracker, QuickFix.IApplicatio
         exReport.Set(new ClOrdID(clOrdID));
         exReport.Set(new Symbol(symbol));
         exReport.Set(new OrderQty(orderQty));
-        exReport.Set(new LastQty(orderQty));
+        //exReport.Set(new LastQty(orderQty));
         exReport.Set(new LastPx(price));
+        exReport.Set(new OrderID(GenOrderID()));
         return exReport;
     }
+
+    private QuickFix.FIX44.OrderCancelReject CreateOrderCancelReject(string clOrdID)
+    {
+        return new QuickFix.FIX44.OrderCancelReject(
+            new OrderID(GenOrderID()),
+            new ClOrdID(clOrdID),
+            new OrigClOrdID(clOrdID),
+            new OrdStatus(OrdStatus.CANCELED),
+            new CxlRejResponseTo('1')
+        );
+    }
+
 
     private async Task BroadcastMessage(string message)
     {
